@@ -1,4 +1,6 @@
 import ccxt
+import logging
+logging.basicConfig(level=logging.DEBUG)
 import pandas as pd
 import time
 import requests
@@ -128,7 +130,7 @@ def fetch_defilama_data(token_id):
         token_id: The ID of the token.
 
     Returns:
-        None.
+        A dictionary containing the data for the token.
     """
 
     url = f'https://api.defilama.com/v1/tokens/{token_id}'
@@ -137,17 +139,41 @@ def fetch_defilama_data(token_id):
     }
 
     response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return None
-    else:
+    if response.status_code != 200:
         raise Exception(f'Error fetching data from DeFiLlama for token {token_id}: {response.status_code}')
+
+    data = response.json()
+    return data
+
+
+def retry_on_exception(func, *args, **kwargs):
+    """
+    Retry the given function on exception.
+
+    Args:
+        func: The function to retry.
+        args: The arguments to pass to the function.
+        kwargs: The keyword arguments to pass to the function.
+
+    Returns:
+        The result of the function call.
+    """
+
+    for _ in range(3):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            print(f'Error calling {func.__name__}: {e}')
+            time.sleep(1)
+
+    raise Exception(f'Failed to call {func.__name__} after 3 retries')
 
 
 for token in tokens:
     try:
-        defilama_data = fetch_defilama_data(token)
-    except Exception as e:
-        print(f'Error fetching data from DeFiLlama for token {token}: {e}')
+        defilama_data = retry_on_exception(fetch_defilama_data, token)
+    except Exception:
+        print(f'Error fetching data for token {token}')
         continue
 
     if defilama_data is not None:
@@ -161,36 +187,28 @@ for token in tokens:
         else:
             token_entry = Token(token_id=token, market_cap=defilama_data['market_cap'], tv=defilama_data['tv'], yield_value=defilama_data['yield_value'], revenue=defilama_data['revenue'])
             session.add(token_entry)
-    session.commit
-
+    session.commit()
 
 # Fetch live prices and OHLC data from exchanges
 for exchange_name in exchanges:
     try:
         exchange = getattr(ccxt, exchange_name)()
         markets = exchange.load_markets()
+        exchange.verbose = True 
 
         for token in tokens:
             symbol = token + '/USDT'
 
             # Fetch live price
-            try:
-                ticker = exchange.fetch_ticker(symbol)
-                price_entry = Price(token_id=token, exchange_id=exchange_name, price=ticker['last'])
-                session.add(price_entry)
-            except ccxt.NetworkError as e:
-                print(f'Error fetching live price for {symbol} on {exchange_name}:', e)
-                continue
+            price = retry_on_exception(exchange.fetch_ticker, symbol)['last']
+            price_entry = Price(token_id=token, exchange_id=exchange_name, price=price)
+            session.add(price_entry)
 
             # Fetch OHLC data
-            try:
-                ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
-                for candle in ohlcv:
-                    ohlcv_entry = OHLC(token_id=token, exchange_id=exchange_name, timestamp=candle[0], open=candle[1], high=candle[2], low=candle[3], close=candle[4], volume=candle[5])
-                    session.add(ohlcv_entry)
-            except ccxt.NetworkError as e:
-                print(f'Error fetching OHLC data for {symbol} on {exchange_name}:', e)
-                continue
+            ohlcv = retry_on_exception(exchange.fetch_ohlcv, symbol, timeframe='1h', limit=100)
+            for candle in ohlcv:
+                ohlcv_entry = OHLC(token_id=token, exchange_id=exchange_name, timestamp=candle[0], open=candle[1], high=candle[2], low=candle[3], close=candle[4], volume=candle[5])
+                session.add(ohlcv_entry)
         session.commit()
     except:
         print('Error fetching data from exchanges')
