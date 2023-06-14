@@ -1,0 +1,96 @@
+import ccxt
+import requests
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Float, DateTime
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base
+from datetime import datetime, timedelta
+import alembic
+import pandas as pd
+
+# Get API Keys
+from dotenv import load_dotenv
+load_dotenv(".env")
+import os
+api_keys = {
+    'binance': os.getenv("vmPUZE6mv9SD5VNHk4HlWFsOr6aKE2zvsw0MuIgwCIPy6utIco14y7Ju91duEh8A"),
+    #'coinbase': os.getenv("COINBASE_API_KEY"),
+}
+
+# Set up SQLite database
+engine = create_engine('sqlite:///cryptoDB.db')
+Base = declarative_base()
+Session = sessionmaker(bind=engine)
+session = Session()
+
+# Define database tables
+
+# Define the Exchange model
+class Exchanges(Base):
+    __tablename__ = 'theexchanges'
+    exchange_id = Column(String, primary_key=True)
+    name = Column(String)
+    country = Column(String)
+    website = Column(String)
+
+# Define the Token model
+class Token(Base):
+    __tablename__ = 'token'
+    token_id = Column(String, primary_key=True)
+    exchange_id = Column(String, ForeignKey('theexchanges.exchange_id'))
+    symbol = Column(String)
+    name = Column(String)
+    contract_address = Column(String)
+
+# Define the Price and Volume model
+class OHLCV(Base):
+    __tablename__ = 'OHLCV'
+    ohlcv_id = Column(String, primary_key=True)
+    token_id = Column(String, ForeignKey('token.token_id'))
+    exchange_id = Column(String, ForeignKey('theexchanges.exchange_id'))
+    date = Column(DateTime, default=datetime.utcnow)
+    open_price = Column(Float)
+    high_price = Column(Float)
+    low_price = Column(Float)
+    close_price = Column(Float)
+    volume = Column(Float)
+
+# Create the database tables if they don't exist
+Base.metadata.create_all(engine)
+
+def update_exchange_data(theexchanges):
+    # Update or populate exchange data using ccxt library
+    for exchange_name in theexchanges:
+        exchange = getattr(ccxt, exchange_name)()
+        exchange_info = {
+            'exchange_id': exchange.id,
+            'name': exchange.name,
+            'country': exchange.countries[0],
+            'website': exchange.urls['www'],
+        }
+        session.merge(Exchanges(**exchange_info))
+
+    session.commit()
+
+def update_token_data():
+    # Update or populate token data using ccxt library
+    exchanges = session.query(Exchanges).all()
+
+    for exchange in exchanges:
+        exchange_obj = getattr(ccxt, exchange.exchange_id)
+        exch = exchange_obj({
+            'apiKey': api_keys['binance'],
+            #'secret': '15af09e41c36f3cc61378c2fbe2c33719a03dd5eba8d0f9206fbda44de717c88',
+        })
+
+        markets = exchange_obj().fetch_markets()
+
+        for market in markets:
+            token_info = {
+               'token_id': market['id'],
+               'exchange_id': exchange.exchange_id,
+               'symbol': market['symbol'],
+               'name': market['base'],
+               'contract_address': market['contract_address'],
+            }
+            session.merge(Token(**token_info))
+        session.commit()
